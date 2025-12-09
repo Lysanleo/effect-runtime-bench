@@ -35,3 +35,7 @@ tmp/
 temp/
 *.tmp
 
+# Benchmark results
+benchmark-results.json
+stress-results.json
+
