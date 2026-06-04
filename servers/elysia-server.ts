@@ -24,10 +24,13 @@ import {
 
 const PORT = 3001;
 
+const cookieValue = (value: unknown): string | null =>
+	typeof value === "string" ? value : null;
+
 const app = new Elysia()
 	.get("/api/data", async ({ cookie, set }) => {
-		const sessionId = cookie.sessionId?.value || null;
-		const trackingId = cookie.trackingId?.value || null;
+		const sessionId = cookieValue(cookie.sessionId?.value);
+		const trackingId = cookieValue(cookie.trackingId?.value);
 
 		const delay = randomDelay();
 		await sleep(delay);
@@ -131,7 +134,8 @@ const app = new Elysia()
 		};
 	})
 	.get("/api/cart", async ({ cookie }) => {
-		const sessionId = cookie.sessionId?.value || generateSessionId();
+		const sessionId =
+			cookieValue(cookie.sessionId?.value) || generateSessionId();
 
 		const delay = randomDelay();
 		await sleep(delay);
@@ -229,8 +233,8 @@ const app = new Elysia()
 	.post(
 		"/api/orders",
 		async ({ body, cookie }) => {
-			const sessionId = cookie.sessionId?.value || null;
-			const userId = cookie.userId?.value || null;
+			const sessionId = cookieValue(cookie.sessionId?.value);
+			const userId = cookieValue(cookie.userId?.value);
 
 			const delay = randomDelay();
 			await sleep(delay);
@@ -317,7 +321,8 @@ const app = new Elysia()
 	.post(
 		"/api/search",
 		async ({ body, cookie }) => {
-			const sessionId = cookie.sessionId?.value || generateSessionId();
+			const sessionId =
+				cookieValue(cookie.sessionId?.value) || generateSessionId();
 
 			const delay = randomDelay();
 			await sleep(delay);
@@ -398,7 +403,8 @@ const app = new Elysia()
 	.post(
 		"/api/analytics",
 		async ({ body, cookie }) => {
-			const trackingId = cookie.trackingId?.value || generateTrackingId();
+			const trackingId =
+				cookieValue(cookie.trackingId?.value) || generateTrackingId();
 
 			const delay = randomDelay();
 			await sleep(delay);
@@ -439,7 +445,8 @@ const app = new Elysia()
 	.post(
 		"/api/cart",
 		async ({ body, cookie }) => {
-			const sessionId = cookie.sessionId?.value || generateSessionId();
+			const sessionId =
+				cookieValue(cookie.sessionId?.value) || generateSessionId();
 
 			const delay = randomDelay();
 			await sleep(delay);
