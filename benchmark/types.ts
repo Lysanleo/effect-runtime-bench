@@ -20,6 +20,12 @@ export interface EndpointConfig {
 	headers?: Record<string, string>;
 }
 
+export interface ServerConfig {
+	name: string;
+	command: string[];
+	port: number;
+}
+
 export interface BenchmarkReport {
 	timestamp: string;
 	config: {
@@ -30,8 +36,7 @@ export interface BenchmarkReport {
 	};
 	results: BenchmarkResult[];
 	summary: {
-		effect: ServerSummary;
-		elysia: ServerSummary;
+		servers: Record<string, ServerSummary>;
 		winner: {
 			overall: string;
 			latency: string;

@@ -1,12 +1,7 @@
 import type { BenchmarkResult } from "./types";
-import {
-	DURATION,
-	CONNECTIONS,
-	PIPELINING,
-	EFFECT_PORT,
-	ELYSIA_PORT,
-} from "./constants";
+import { DURATION, CONNECTIONS, PIPELINING } from "./constants";
 import { createEndpoints } from "./endpoints";
+import { SERVER_CONFIGS } from "./server-configs";
 import {
 	sleep,
 	startServer,
@@ -27,7 +22,7 @@ const main = async () => {
 		"╔═════════════════════════════════════════════════════════════════════════════════════════╗",
 	);
 	console.log(
-		"║         Effect vs Elysia HTTP Server Performance Benchmark (STRESS TEST)               ║",
+		"║      Effect vs Elysia vs Hono HTTP Server Performance Benchmark (STRESS TEST)          ║",
 	);
 	console.log(
 		"╠═════════════════════════════════════════════════════════════════════════════════════════╣",
@@ -59,46 +54,25 @@ const main = async () => {
 
 	const results: BenchmarkResult[] = [];
 
-	console.log("\n" + "-".repeat(90));
-	console.log("BENCHMARKING EFFECT SERVER");
-	console.log("-".repeat(90));
+	for (const server of SERVER_CONFIGS) {
+		console.log("\n" + "-".repeat(90));
+		console.log(`BENCHMARKING ${server.name.toUpperCase()} SERVER`);
+		console.log("-".repeat(90));
 
-	const effectProc = await startServer(
-		"Effect",
-		"servers/effect-server.ts",
-		EFFECT_PORT,
-	);
+		const serverEndpoints = createEndpoints();
+		const proc = await startServer(server);
 
-	try {
-		const effectResults = await Promise.all(
-			endpoints.map((config) => runBenchmark("Effect", EFFECT_PORT, config)),
-		);
-		results.push(...effectResults);
-	} finally {
-		stopServer(effectProc);
-		await sleep(2000);
-	}
-
-	console.log("\n" + "-".repeat(90));
-	console.log("BENCHMARKING ELYSIA SERVER");
-	console.log("-".repeat(90));
-
-	const elysiaEndpoints = createEndpoints();
-	const elysiaProc = await startServer(
-		"Elysia",
-		"servers/elysia-server.ts",
-		ELYSIA_PORT,
-	);
-
-	try {
-		const elysiaResults = await Promise.all(
-			elysiaEndpoints.map((config) =>
-				runBenchmark("Elysia", ELYSIA_PORT, config),
-			),
-		);
-		results.push(...elysiaResults);
-	} finally {
-		stopServer(elysiaProc);
+		try {
+			const serverResults = await Promise.all(
+				serverEndpoints.map((config) =>
+					runBenchmark(server.name, server.port, config),
+				),
+			);
+			results.push(...serverResults);
+		} finally {
+			stopServer(proc);
+			await sleep(2000);
+		}
 	}
 
 	const report = createReport(results, endpoints.length);

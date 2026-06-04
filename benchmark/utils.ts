@@ -5,6 +5,7 @@ import type {
 	EndpointConfig,
 	BenchmarkReport,
 	ServerSummary,
+	ServerConfig,
 } from "./types";
 import { CONNECTIONS, DURATION, PIPELINING, RESULTS_FILE } from "./constants";
 
@@ -27,26 +28,24 @@ export const waitForServer = async (
 };
 
 export const startServer = async (
-	name: string,
-	script: string,
-	port: number,
+	server: ServerConfig,
 ): Promise<Subprocess> => {
-	console.log(`\nStarting ${name} server on port ${port}...`);
+	console.log(`\nStarting ${server.name} server on port ${server.port}...`);
 
 	const proc = spawn({
-		cmd: ["bun", "run", script],
+		cmd: server.command,
 		cwd: process.cwd(),
 		stdout: "inherit",
 		stderr: "inherit",
 	});
 
-	const ready = await waitForServer(port);
+	const ready = await waitForServer(server.port);
 	if (!ready) {
 		proc.kill();
-		throw new Error(`${name} server failed to start`);
+		throw new Error(`${server.name} server failed to start`);
 	}
 
-	console.log(`${name} server ready!\n`);
+	console.log(`${server.name} server ready!\n`);
 	return proc;
 };
 
@@ -137,31 +136,48 @@ const calculateServerSummary = (results: BenchmarkResult[]): ServerSummary => {
 	};
 };
 
+const getBestBy = (
+	summaries: Record<string, ServerSummary>,
+	select: (summary: ServerSummary) => number,
+	direction: "max" | "min",
+) => {
+	const ranked = Object.entries(summaries).sort((a, b) =>
+		direction === "max"
+			? select(b[1]) - select(a[1])
+			: select(a[1]) - select(b[1]),
+	);
+
+	const [winnerName, winnerSummary] = ranked[0];
+	const runnerUpSummary = ranked[1]?.[1] ?? winnerSummary;
+	const winnerValue = select(winnerSummary);
+	const runnerUpValue = select(runnerUpSummary);
+	const denominator =
+		direction === "max"
+			? Math.min(winnerValue, runnerUpValue)
+			: Math.max(winnerValue, runnerUpValue);
+
+	return {
+		name: winnerName,
+		diff:
+			denominator === 0
+				? 0
+				: Math.abs(((winnerValue - runnerUpValue) / denominator) * 100),
+	};
+};
+
 export const createReport = (
 	results: BenchmarkResult[],
 	endpointCount: number,
 ): BenchmarkReport => {
-	const effectResults = results.filter((r) => r.server === "Effect");
-	const elysiaResults = results.filter((r) => r.server === "Elysia");
-
-	const effectSummary = calculateServerSummary(effectResults);
-	const elysiaSummary = calculateServerSummary(elysiaResults);
-
-	const overallWinner =
-		effectSummary.totalReqSec > elysiaSummary.totalReqSec ? "Effect" : "Elysia";
-	const overallDiff = Math.abs(
-		((effectSummary.totalReqSec - elysiaSummary.totalReqSec) /
-			Math.min(effectSummary.totalReqSec, elysiaSummary.totalReqSec)) *
-			100,
+	const serverNames = [...new Set(results.map((r) => r.server))];
+	const servers = Object.fromEntries(
+		serverNames.map((server) => [
+			server,
+			calculateServerSummary(results.filter((r) => r.server === server)),
+		]),
 	);
-
-	const latencyWinner =
-		effectSummary.avgP99 < elysiaSummary.avgP99 ? "Effect" : "Elysia";
-	const latencyDiff = Math.abs(
-		((effectSummary.avgP99 - elysiaSummary.avgP99) /
-			Math.max(effectSummary.avgP99, elysiaSummary.avgP99)) *
-			100,
-	);
+	const overall = getBestBy(servers, (summary) => summary.totalReqSec, "max");
+	const latency = getBestBy(servers, (summary) => summary.avgP99, "min");
 
 	return {
 		timestamp: new Date().toISOString(),
@@ -173,13 +189,12 @@ export const createReport = (
 		},
 		results,
 		summary: {
-			effect: effectSummary,
-			elysia: elysiaSummary,
+			servers,
 			winner: {
-				overall: overallWinner,
-				latency: latencyWinner,
-				overallDiff,
-				latencyDiff,
+				overall: overall.name,
+				latency: latency.name,
+				overallDiff: overall.diff,
+				latencyDiff: latency.diff,
 			},
 		},
 	};
@@ -235,54 +250,35 @@ export const printResults = (report: BenchmarkReport) => {
 	console.log("SUMMARY BY ENDPOINT TYPE");
 	console.log("=".repeat(140));
 
-	const effectGetResults = results.filter(
-		(r) => r.server === "Effect" && r.method === "GET",
-	);
-	const effectPostResults = results.filter(
-		(r) => r.server === "Effect" && r.method === "POST",
-	);
+	const serverSummaries = Object.entries(summary.servers);
+	const getEndpointCount = results.filter(
+		(r) => r.server === serverSummaries[0]?.[0] && r.method === "GET",
+	).length;
+	const postEndpointCount = results.filter(
+		(r) => r.server === serverSummaries[0]?.[0] && r.method === "POST",
+	).length;
 
-	console.log(`\nGET Endpoints (${effectGetResults.length} endpoints):`);
-	console.log(
-		`  Effect:  ${summary.effect.get.totalReqSec.toFixed(0).padStart(8)} total req/sec | ${summary.effect.get.avgReqSec.toFixed(0).padStart(6)} avg/endpoint | p99: ${summary.effect.get.avgP99.toFixed(0)}ms`,
-	);
-	console.log(
-		`  Elysia:  ${summary.elysia.get.totalReqSec.toFixed(0).padStart(8)} total req/sec | ${summary.elysia.get.avgReqSec.toFixed(0).padStart(6)} avg/endpoint | p99: ${summary.elysia.get.avgP99.toFixed(0)}ms`,
-	);
-	const getWinner =
-		summary.effect.get.totalReqSec > summary.elysia.get.totalReqSec
-			? "Effect"
-			: "Elysia";
-	const getDiff = Math.abs(
-		((summary.effect.get.totalReqSec - summary.elysia.get.totalReqSec) /
-			Math.min(
-				summary.effect.get.totalReqSec,
-				summary.elysia.get.totalReqSec,
-			)) *
-			100,
-	);
-	console.log(`  Winner: ${getWinner} (+${getDiff.toFixed(1)}%)`);
+	console.log(`\nGET Endpoints (${getEndpointCount} endpoints):`);
+	for (const [server, serverSummary] of serverSummaries) {
+		console.log(
+			`  ${server.padEnd(7)} ${serverSummary.get.totalReqSec.toFixed(0).padStart(8)} total req/sec | ${serverSummary.get.avgReqSec.toFixed(0).padStart(6)} avg/endpoint | p99: ${serverSummary.get.avgP99.toFixed(0)}ms`,
+		);
+	}
+	const getWinner = getBestBy(summary.servers, (s) => s.get.totalReqSec, "max");
+	console.log(`  Winner: ${getWinner.name} (+${getWinner.diff.toFixed(1)}%)`);
 
-	console.log(`\nPOST Endpoints (${effectPostResults.length} endpoints):`);
-	console.log(
-		`  Effect:  ${summary.effect.post.totalReqSec.toFixed(0).padStart(8)} total req/sec | ${summary.effect.post.avgReqSec.toFixed(0).padStart(6)} avg/endpoint | p99: ${summary.effect.post.avgP99.toFixed(0)}ms`,
+	console.log(`\nPOST Endpoints (${postEndpointCount} endpoints):`);
+	for (const [server, serverSummary] of serverSummaries) {
+		console.log(
+			`  ${server.padEnd(7)} ${serverSummary.post.totalReqSec.toFixed(0).padStart(8)} total req/sec | ${serverSummary.post.avgReqSec.toFixed(0).padStart(6)} avg/endpoint | p99: ${serverSummary.post.avgP99.toFixed(0)}ms`,
+		);
+	}
+	const postWinner = getBestBy(
+		summary.servers,
+		(s) => s.post.totalReqSec,
+		"max",
 	);
-	console.log(
-		`  Elysia:  ${summary.elysia.post.totalReqSec.toFixed(0).padStart(8)} total req/sec | ${summary.elysia.post.avgReqSec.toFixed(0).padStart(6)} avg/endpoint | p99: ${summary.elysia.post.avgP99.toFixed(0)}ms`,
-	);
-	const postWinner =
-		summary.effect.post.totalReqSec > summary.elysia.post.totalReqSec
-			? "Effect"
-			: "Elysia";
-	const postDiff = Math.abs(
-		((summary.effect.post.totalReqSec - summary.elysia.post.totalReqSec) /
-			Math.min(
-				summary.effect.post.totalReqSec,
-				summary.elysia.post.totalReqSec,
-			)) *
-			100,
-	);
-	console.log(`  Winner: ${postWinner} (+${postDiff.toFixed(1)}%)`);
+	console.log(`  Winner: ${postWinner.name} (+${postWinner.diff.toFixed(1)}%)`);
 
 	console.log("\n" + "=".repeat(140));
 	console.log("OVERALL SUMMARY");
@@ -291,12 +287,11 @@ export const printResults = (report: BenchmarkReport) => {
 	console.log(
 		`\nCombined throughput (${config.endpointCount} endpoints hammered simultaneously):`,
 	);
-	console.log(
-		`  Effect:  ${summary.effect.totalReqSec.toFixed(0).padStart(8)} req/sec | ${formatBytes(summary.effect.totalThroughput).padStart(12)} | avg p99: ${summary.effect.avgP99.toFixed(0)}ms | ${summary.effect.totalErrors} errors`,
-	);
-	console.log(
-		`  Elysia:  ${summary.elysia.totalReqSec.toFixed(0).padStart(8)} req/sec | ${formatBytes(summary.elysia.totalThroughput).padStart(12)} | avg p99: ${summary.elysia.avgP99.toFixed(0)}ms | ${summary.elysia.totalErrors} errors`,
-	);
+	for (const [server, serverSummary] of serverSummaries) {
+		console.log(
+			`  ${server.padEnd(7)} ${serverSummary.totalReqSec.toFixed(0).padStart(8)} req/sec | ${formatBytes(serverSummary.totalThroughput).padStart(12)} | avg p99: ${serverSummary.avgP99.toFixed(0)}ms | ${serverSummary.totalErrors} errors`,
+		);
+	}
 
 	console.log(
 		`\n  🏆 OVERALL WINNER: ${summary.winner.overall} (+${summary.winner.overallDiff.toFixed(1)}%)`,

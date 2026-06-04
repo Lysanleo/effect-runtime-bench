@@ -1,8 +1,8 @@
 import autocannon from "autocannon";
-import { spawn, type Subprocess } from "bun";
-import { EFFECT_PORT, ELYSIA_PORT } from "./constants";
 import { createEndpoints } from "./endpoints";
+import { SERVER_CONFIGS } from "./server-configs";
 import type { EndpointConfig } from "./types";
+import { sleep, startServer, stopServer } from "./utils";
 
 const PHASES = 2;
 const DURATION_PER_ENDPOINT = 4;
@@ -37,6 +37,7 @@ interface StressReport {
 	connectionSteps: number[];
 	results: StressResult[];
 	summary: {
+		avgReqSec: number;
 		maxReqSec: number;
 		maxConnections: number;
 		breakingPoint: number | null;
@@ -45,64 +46,12 @@ interface StressReport {
 	};
 }
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const waitForServer = async (
-	port: number,
-	maxAttempts = 50,
-): Promise<boolean> => {
-	for (let i = 0; i < maxAttempts; i++) {
-		try {
-			const response = await fetch(`http://localhost:${port}/api/data`);
-			if (response.ok) return true;
-		} catch {
-			await sleep(500);
-		}
-	}
-	return false;
-};
-
-const startServer = async (
-	name: string,
-	script: string,
-	port: number,
-): Promise<Subprocess> => {
-	console.log(`\n🚀 Starting ${name} server on port ${port}...`);
-
-	const proc = spawn({
-		cmd: ["bun", "run", script],
-		cwd: process.cwd(),
-		stdout: "inherit",
-		stderr: "inherit",
-	});
-
-	const ready = await waitForServer(port);
-	if (!ready) {
-		proc.kill();
-		throw new Error(`${name} server failed to start`);
-	}
-
-	console.log(`✅ ${name} server ready!\n`);
-	return proc;
-};
-
-const stopServer = (proc: Subprocess) => {
-	proc.kill();
-};
-
 const runStressPhase = async (
 	port: number,
 	connections: number,
 	endpoint: EndpointConfig,
 	duration: number,
-): Promise<{
-	requestsPerSecond: number;
-	latencyP50: number;
-	latencyP99: number;
-	latencyMax: number;
-	errors: number;
-	timeouts: number;
-}> => {
+): Promise<Omit<StressResult, "phase" | "connections" | "endpoint" | "method">> => {
 	const url = `http://localhost:${port}${endpoint.endpoint}`;
 
 	const options: autocannon.Options = {
@@ -178,14 +127,15 @@ const runStressTest = async (
 					endpoint,
 					DURATION_PER_ENDPOINT,
 				);
-
-				results.push({
+				const result = {
 					phase: phase + 1,
 					connections,
 					endpoint: endpoint.endpoint,
 					method: endpoint.method,
 					...phaseResult,
-				});
+				};
+
+				results.push(result);
 
 				phaseReqSec += phaseResult.requestsPerSecond;
 				phaseErrors += phaseResult.errors + phaseResult.timeouts;
@@ -212,7 +162,7 @@ const runStressTest = async (
 					);
 				}
 			} catch {
-				console.log(` ❌ Failed`);
+				console.log(" ❌ Failed");
 				results.push({
 					phase: phase + 1,
 					connections,
@@ -243,11 +193,12 @@ const runStressTest = async (
 		(max, r) => (r.requestsPerSecond > max.requestsPerSecond ? r : max),
 		results[0],
 	);
-
 	const lastPhaseResults = results.filter((r) => r.phase === PHASES);
 	const avgLatencyP99AtMax =
 		lastPhaseResults.reduce((sum, r) => sum + r.latencyP99, 0) /
 		lastPhaseResults.length;
+	const avgReqSec =
+		results.reduce((sum, r) => sum + r.requestsPerSecond, 0) / results.length;
 
 	return {
 		timestamp: new Date().toISOString(),
@@ -257,6 +208,7 @@ const runStressTest = async (
 		connectionSteps: CONNECTION_STEPS,
 		results,
 		summary: {
+			avgReqSec,
 			maxReqSec: maxReqSecResult.requestsPerSecond,
 			maxConnections: END_CONNECTIONS,
 			breakingPoint,
@@ -266,91 +218,98 @@ const runStressTest = async (
 	};
 };
 
+const winnerBy = (
+	reports: Record<string, StressReport>,
+	select: (report: StressReport) => number,
+	direction: "max" | "min",
+) => {
+	const ranked = Object.entries(reports).sort((a, b) =>
+		direction === "max"
+			? select(b[1]) - select(a[1])
+			: select(a[1]) - select(b[1]),
+	);
+	const [winner, winnerReport] = ranked[0];
+	const runnerUpReport = ranked[1]?.[1] ?? winnerReport;
+	const winnerValue = select(winnerReport);
+	const runnerUpValue = select(runnerUpReport);
+	const denominator =
+		direction === "max"
+			? Math.min(winnerValue, runnerUpValue)
+			: Math.max(winnerValue, runnerUpValue);
+
+	return {
+		winner,
+		diff:
+			denominator === 0
+				? 0
+				: Math.abs(((winnerValue - runnerUpValue) / denominator) * 100),
+	};
+};
+
+const phaseStats = (report: StressReport, phase: number) => {
+	const phaseResults = report.results.filter((r) => r.phase === phase);
+	return {
+		avgReqSec:
+			phaseResults.reduce((sum, r) => sum + r.requestsPerSecond, 0) /
+			phaseResults.length,
+		avgP99:
+			phaseResults.reduce((sum, r) => sum + r.latencyP99, 0) /
+			phaseResults.length,
+	};
+};
+
 const printStressReport = (
-	effectReport: StressReport,
-	elysiaReport: StressReport,
+	reports: Record<string, StressReport>,
 	endpointCount: number,
 ) => {
+	const serverNames = Object.keys(reports);
+	const serverWidth = Math.max(
+		"Server".length,
+		...serverNames.map((server) => server.length),
+	);
+	const separator = `┌${"─".repeat(serverWidth + 2)}┬─────────────┬─────────────┬────────────────┬─────────────┬──────────────┐`;
+	const header = `│ ${"Server".padEnd(serverWidth)} │ Avg Req/sec │ Max Req/sec │ Breaking Point │ P99 MaxLoad │ Total Errors │`;
+	const divider = `├${"─".repeat(serverWidth + 2)}┼─────────────┼─────────────┼────────────────┼─────────────┼──────────────┤`;
+	const footer = `└${"─".repeat(serverWidth + 2)}┴─────────────┴─────────────┴────────────────┴─────────────┴──────────────┘`;
+
 	console.log(`\n${"═".repeat(100)}`);
 	console.log("📊 STRESS TEST RESULTS COMPARISON");
 	console.log(`${"═".repeat(100)}`);
 
-	console.log("\n┌──────────────────┬────────────────┬────────────────┐");
-	console.log("│ Metric           │ Effect         │ Elysia         │");
-	console.log("├──────────────────┼────────────────┼────────────────┤");
+	console.log(`\n${separator}`);
+	console.log(header);
+	console.log(divider);
 
-	const effectAvgReq =
-		effectReport.results.reduce((sum, r) => sum + r.requestsPerSecond, 0) /
-		effectReport.results.length;
-	const elysiaAvgReq =
-		elysiaReport.results.reduce((sum, r) => sum + r.requestsPerSecond, 0) /
-		elysiaReport.results.length;
-
-	console.log(
-		`│ Avg Req/sec      │ ${effectAvgReq.toFixed(0).padStart(14)} │ ${elysiaAvgReq.toFixed(0).padStart(14)} │`,
-	);
-	console.log(
-		`│ Max Single Req/s │ ${effectReport.summary.maxReqSec.toFixed(0).padStart(14)} │ ${elysiaReport.summary.maxReqSec.toFixed(0).padStart(14)} │`,
-	);
-	console.log(
-		`│ Breaking Point   │ ${(effectReport.summary.breakingPoint?.toLocaleString() || "None").padStart(14)} │ ${(elysiaReport.summary.breakingPoint?.toLocaleString() || "None").padStart(14)} │`,
-	);
-	console.log(
-		`│ P99 at Max Load  │ ${(effectReport.summary.avgLatencyP99AtMax.toFixed(0) + "ms").padStart(14)} │ ${(elysiaReport.summary.avgLatencyP99AtMax.toFixed(0) + "ms").padStart(14)} │`,
-	);
-	console.log(
-		`│ Total Errors     │ ${effectReport.summary.totalErrors.toLocaleString().padStart(14)} │ ${elysiaReport.summary.totalErrors.toLocaleString().padStart(14)} │`,
-	);
-	console.log("└──────────────────┴────────────────┴────────────────┘");
-
-	console.log(`\n📈 Performance by Phase (${endpointCount} endpoints each):`);
-	console.log(
-		"┌───────┬─────────────┬─────────────────────────────┬─────────────────────────────┐",
-	);
-	console.log(
-		"│ Phase │ Connections │ Effect (req/s | p99)        │ Elysia (req/s | p99)        │",
-	);
-	console.log(
-		"├───────┼─────────────┼─────────────────────────────┼─────────────────────────────┤",
-	);
-
-	for (let phase = 1; phase <= PHASES; phase++) {
-		const effectPhase = effectReport.results.filter((r) => r.phase === phase);
-		const elysiaPhase = elysiaReport.results.filter((r) => r.phase === phase);
-
-		const effectAvgReq =
-			effectPhase.reduce((sum, r) => sum + r.requestsPerSecond, 0) /
-			effectPhase.length;
-		const effectAvgP99 =
-			effectPhase.reduce((sum, r) => sum + r.latencyP99, 0) /
-			effectPhase.length;
-		const elysiaAvgReq =
-			elysiaPhase.reduce((sum, r) => sum + r.requestsPerSecond, 0) /
-			elysiaPhase.length;
-		const elysiaAvgP99 =
-			elysiaPhase.reduce((sum, r) => sum + r.latencyP99, 0) /
-			elysiaPhase.length;
-
-		const connections = CONNECTION_STEPS[phase - 1];
-
+	for (const server of serverNames) {
+		const report = reports[server];
 		console.log(
-			`│ ${String(phase).padStart(5)} │ ${connections.toLocaleString().padStart(11)} │ ${effectAvgReq.toFixed(0).padStart(12)} | ${(effectAvgP99.toFixed(0) + "ms").padStart(12)} │ ${elysiaAvgReq.toFixed(0).padStart(12)} | ${(elysiaAvgP99.toFixed(0) + "ms").padStart(12)} │`,
+			`│ ${server.padEnd(serverWidth)} │ ${report.summary.avgReqSec.toFixed(0).padStart(11)} │ ${report.summary.maxReqSec.toFixed(0).padStart(11)} │ ${(report.summary.breakingPoint?.toLocaleString() || "None").padStart(14)} │ ${(report.summary.avgLatencyP99AtMax.toFixed(0) + "ms").padStart(11)} │ ${report.summary.totalErrors.toLocaleString().padStart(12)} │`,
 		);
 	}
 
-	console.log(
-		"└───────┴─────────────┴─────────────────────────────┴─────────────────────────────┘",
-	);
+	console.log(footer);
 
-	const effectWins = effectAvgReq > elysiaAvgReq;
-	const winner = effectWins ? "Effect" : "Elysia";
-	const diff = Math.abs(
-		((effectAvgReq - elysiaAvgReq) / Math.min(effectAvgReq, elysiaAvgReq)) *
-			100,
-	);
+	console.log(`\n📈 Performance by Phase (${endpointCount} endpoints each):`);
+	for (let phase = 1; phase <= PHASES; phase++) {
+		console.log(
+			`\nPhase ${phase} (${CONNECTION_STEPS[phase - 1].toLocaleString()} connections)`,
+		);
+		for (const server of serverNames) {
+			const stats = phaseStats(reports[server], phase);
+			console.log(
+				`  ${server.padEnd(serverWidth)} ${stats.avgReqSec.toFixed(0).padStart(6)} req/s | p99 ${stats.avgP99.toFixed(0).padStart(5)}ms`,
+			);
+		}
+	}
+
+	const throughput = winnerBy(reports, (r) => r.summary.avgReqSec, "max");
+	const latency = winnerBy(reports, (r) => r.summary.avgLatencyP99AtMax, "min");
 
 	console.log(
-		`\n🏆 STRESS TEST WINNER: ${winner} (+${diff.toFixed(1)}% avg throughput)`,
+		`\n🏆 THROUGHPUT WINNER: ${throughput.winner} (+${throughput.diff.toFixed(1)}% avg throughput)`,
+	);
+	console.log(
+		`⚡ LATENCY WINNER: ${latency.winner} (${latency.diff.toFixed(1)}% lower p99 at max load)`,
 	);
 	console.log(`${"═".repeat(100)}\n`);
 };
@@ -364,39 +323,26 @@ const main = async () => {
 ╔═══════════════════════════════════════════════════════════════════════════════════╗
 ║                     🔥 STRESS TEST - PUSH TO THE LIMIT 🔥                          ║
 ╠═══════════════════════════════════════════════════════════════════════════════════╣
+║  Servers: ${SERVER_CONFIGS.map((server) => server.name).join(", ")}
 ║  Phases: ${PHASES} phases × ${endpoints.length} endpoints × ${DURATION_PER_ENDPOINT}s = ~${estimatedMinutes} min per server
 ║  Connections: ${START_CONNECTIONS} → ${END_CONNECTIONS}
 ║  Endpoints: ALL ${endpoints.length} endpoints tested sequentially per phase
 ╚═══════════════════════════════════════════════════════════════════════════════════╝
 `);
 
-	let effectReport: StressReport;
-	let elysiaReport: StressReport;
+	const reports: Record<string, StressReport> = {};
 
-	const effectProc = await startServer(
-		"Effect",
-		"servers/effect-server.ts",
-		EFFECT_PORT,
-	);
-	try {
-		effectReport = await runStressTest("Effect", EFFECT_PORT);
-	} finally {
-		stopServer(effectProc);
-		await sleep(3000);
+	for (const server of SERVER_CONFIGS) {
+		const proc = await startServer(server);
+		try {
+			reports[server.name] = await runStressTest(server.name, server.port);
+		} finally {
+			stopServer(proc);
+			await sleep(3000);
+		}
 	}
 
-	const elysiaProc = await startServer(
-		"Elysia",
-		"servers/elysia-server.ts",
-		ELYSIA_PORT,
-	);
-	try {
-		elysiaReport = await runStressTest("Elysia", ELYSIA_PORT);
-	} finally {
-		stopServer(elysiaProc);
-	}
-
-	printStressReport(effectReport, elysiaReport, endpoints.length);
+	printStressReport(reports, endpoints.length);
 
 	const combinedReport = {
 		timestamp: new Date().toISOString(),
@@ -410,15 +356,18 @@ const main = async () => {
 			pipelining: 1,
 			connectionSteps: CONNECTION_STEPS,
 			endpointCount: endpoints.length,
+			servers: SERVER_CONFIGS.map((server) => server.name),
 		},
-		effect: effectReport,
-		elysia: elysiaReport,
+		servers: reports,
+		// Keep top-level keys for older ad-hoc result readers.
+		effect: reports["Effect (Bun)"],
+		elysia: reports["Elysia (Bun)"],
+		hono: reports["Hono (Bun)"],
+		nodeEffect: reports["Effect (Node)"],
+		nodeHono: reports["Hono (Node)"],
 	};
 
-	await Bun.write(
-		"stress-results.json",
-		JSON.stringify(combinedReport, null, 2),
-	);
+	await Bun.write("stress-results.json", JSON.stringify(combinedReport, null, 2));
 	console.log("📁 Results saved to stress-results.json");
 };
 
