@@ -1,5 +1,10 @@
 import type { BenchmarkResult } from "./types";
-import { DURATION, CONNECTIONS, PIPELINING } from "./constants";
+import {
+	DURATION,
+	PIPELINING,
+	TOTAL_CONNECTIONS,
+	resolveConnections,
+} from "./constants";
 import { createEndpoints } from "./endpoints";
 import { SERVER_CONFIGS } from "./server-configs";
 import {
@@ -14,7 +19,8 @@ import {
 
 const main = async () => {
 	const endpoints = createEndpoints();
-	const totalConnections = CONNECTIONS * endpoints.length;
+	const connections = resolveConnections(endpoints.length);
+	const totalConnections = connections * endpoints.length;
 	const getEndpoints = endpoints.filter((e) => e.method === "GET").length;
 	const postEndpoints = endpoints.filter((e) => e.method === "POST").length;
 
@@ -31,7 +37,7 @@ const main = async () => {
 		`║  Duration: ${DURATION} seconds per test                                                          ║`,
 	);
 	console.log(
-		`║  Connections: ${CONNECTIONS} per endpoint (${totalConnections.toLocaleString()} total concurrent)                                 ║`,
+		`║  Connections: ${connections} per endpoint (${totalConnections.toLocaleString()} total concurrent${TOTAL_CONNECTIONS ? `, requested ${TOTAL_CONNECTIONS.toLocaleString()}` : ""})                                 ║`,
 	);
 	console.log(
 		`║  Pipelining: ${PIPELINING} requests per connection                                                   ║`,
@@ -65,7 +71,7 @@ const main = async () => {
 		try {
 			const serverResults = await Promise.all(
 				serverEndpoints.map((config) =>
-					runBenchmark(server.name, server.port, config),
+					runBenchmark(server.name, server.port, config, connections),
 				),
 			);
 			results.push(...serverResults);
@@ -75,7 +81,7 @@ const main = async () => {
 		}
 	}
 
-	const report = createReport(results, endpoints.length);
+	const report = createReport(results, endpoints.length, connections);
 	await saveReport(report);
 	printResults(report);
 };

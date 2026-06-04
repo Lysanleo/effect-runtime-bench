@@ -5,6 +5,7 @@ export interface BenchmarkResult {
 	requestsPerSecond: number;
 	requestsPerMinute: number;
 	latencyP50: number;
+	latencyP90: number;
 	latencyP99: number;
 	latencyMax: number;
 	totalRequests: number;
@@ -31,6 +32,7 @@ export interface BenchmarkReport {
 	config: {
 		duration: number;
 		connections: number;
+		totalConnections: number;
 		pipelining: number;
 		endpointCount: number;
 	};
@@ -49,16 +51,22 @@ export interface BenchmarkReport {
 export interface ServerSummary {
 	totalReqSec: number;
 	totalThroughput: number;
+	avgP50: number;
+	avgP90: number;
 	avgP99: number;
 	totalErrors: number;
 	get: {
 		totalReqSec: number;
 		avgReqSec: number;
+		avgP50: number;
+		avgP90: number;
 		avgP99: number;
 	};
 	post: {
 		totalReqSec: number;
 		avgReqSec: number;
+		avgP50: number;
+		avgP90: number;
 		avgP99: number;
 	};
 }

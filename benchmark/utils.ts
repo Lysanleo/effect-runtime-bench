@@ -7,7 +7,7 @@ import type {
 	ServerSummary,
 	ServerConfig,
 } from "./types";
-import { CONNECTIONS, DURATION, PIPELINING, RESULTS_FILE } from "./constants";
+import { DURATION, PIPELINING, RESULTS_FILE } from "./constants";
 
 export const sleep = (ms: number) =>
 	new Promise((resolve) => setTimeout(resolve, ms));
@@ -57,12 +57,13 @@ export const runBenchmark = async (
 	server: string,
 	port: number,
 	config: EndpointConfig,
+	connections: number,
 ): Promise<BenchmarkResult> => {
 	const url = `http://localhost:${port}${config.endpoint}`;
 
 	const options: autocannon.Options = {
 		url,
-		connections: CONNECTIONS,
+		connections,
 		duration: DURATION,
 		pipelining: PIPELINING,
 		method: config.method,
@@ -89,6 +90,7 @@ export const runBenchmark = async (
 		requestsPerSecond: result.requests.average,
 		requestsPerMinute: result.requests.average * 60,
 		latencyP50: result.latency.p50,
+		latencyP90: result.latency.p90,
 		latencyP99: result.latency.p99,
 		latencyMax: result.latency.max,
 		totalRequests: result.requests.total,
@@ -117,11 +119,19 @@ const calculateServerSummary = (results: BenchmarkResult[]): ServerSummary => {
 	return {
 		totalReqSec: getTotal + postTotal,
 		totalThroughput: results.reduce((sum, r) => sum + r.throughput, 0),
+		avgP50: results.reduce((sum, r) => sum + r.latencyP50, 0) / results.length,
+		avgP90: results.reduce((sum, r) => sum + r.latencyP90, 0) / results.length,
 		avgP99: results.reduce((sum, r) => sum + r.latencyP99, 0) / results.length,
 		totalErrors: results.reduce((sum, r) => sum + r.errors + r.timeouts, 0),
 		get: {
 			totalReqSec: getTotal,
 			avgReqSec: getTotal / getResults.length,
+			avgP50:
+				getResults.reduce((sum, r) => sum + r.latencyP50, 0) /
+				getResults.length,
+			avgP90:
+				getResults.reduce((sum, r) => sum + r.latencyP90, 0) /
+				getResults.length,
 			avgP99:
 				getResults.reduce((sum, r) => sum + r.latencyP99, 0) /
 				getResults.length,
@@ -129,6 +139,12 @@ const calculateServerSummary = (results: BenchmarkResult[]): ServerSummary => {
 		post: {
 			totalReqSec: postTotal,
 			avgReqSec: postTotal / postResults.length,
+			avgP50:
+				postResults.reduce((sum, r) => sum + r.latencyP50, 0) /
+				postResults.length,
+			avgP90:
+				postResults.reduce((sum, r) => sum + r.latencyP90, 0) /
+				postResults.length,
 			avgP99:
 				postResults.reduce((sum, r) => sum + r.latencyP99, 0) /
 				postResults.length,
@@ -168,6 +184,7 @@ const getBestBy = (
 export const createReport = (
 	results: BenchmarkResult[],
 	endpointCount: number,
+	connections: number,
 ): BenchmarkReport => {
 	const serverNames = [...new Set(results.map((r) => r.server))];
 	const servers = Object.fromEntries(
@@ -183,7 +200,8 @@ export const createReport = (
 		timestamp: new Date().toISOString(),
 		config: {
 			duration: DURATION,
-			connections: CONNECTIONS,
+			connections,
+			totalConnections: connections * endpointCount,
 			pipelining: PIPELINING,
 			endpointCount,
 		},
@@ -287,11 +305,23 @@ export const printResults = (report: BenchmarkReport) => {
 	console.log(
 		`\nCombined throughput (${config.endpointCount} endpoints hammered simultaneously):`,
 	);
+	console.log(
+		"┌───────────────────────────┬────────────┬────────┬────────┬────────┬────────┐",
+	);
+	console.log(
+		"│ Target                    │ Req/s      │ p50    │ p90    │ p99    │ Errors │",
+	);
+	console.log(
+		"├───────────────────────────┼────────────┼────────┼────────┼────────┼────────┤",
+	);
 	for (const [server, serverSummary] of serverSummaries) {
 		console.log(
-			`  ${server.padEnd(7)} ${serverSummary.totalReqSec.toFixed(0).padStart(8)} req/sec | ${formatBytes(serverSummary.totalThroughput).padStart(12)} | avg p99: ${serverSummary.avgP99.toFixed(0)}ms | ${serverSummary.totalErrors} errors`,
+			`│ ${server.slice(0, 25).padEnd(25)} │ ${serverSummary.totalReqSec.toFixed(0).padStart(10)} │ ${`${serverSummary.avgP50.toFixed(0)}ms`.padStart(6)} │ ${`${serverSummary.avgP90.toFixed(0)}ms`.padStart(6)} │ ${`${serverSummary.avgP99.toFixed(0)}ms`.padStart(6)} │ ${String(serverSummary.totalErrors).padStart(6)} │`,
 		);
 	}
+	console.log(
+		"└───────────────────────────┴────────────┴────────┴────────┴────────┴────────┘",
+	);
 
 	console.log(
 		`\n  🏆 OVERALL WINNER: ${summary.winner.overall} (+${summary.winner.overallDiff.toFixed(1)}%)`,

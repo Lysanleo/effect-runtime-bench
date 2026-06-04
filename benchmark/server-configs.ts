@@ -1,8 +1,12 @@
 import {
 	EFFECT_PORT,
 	ELYSIA_PORT,
+	EXPRESS_PORT,
+	FASTIFY_PORT,
 	HONO_PORT,
 	NODE_EFFECT_PORT,
+	NODE_EXPRESS_PORT,
+	NODE_FASTIFY_PORT,
 	NODE_HONO_EFFECT_PORT,
 	NODE_HONO_PORT,
 } from "./constants";
@@ -25,6 +29,16 @@ export const SERVER_CONFIGS: ServerConfig[] = [
 		port: HONO_PORT,
 	},
 	{
+		name: "Express (Bun)",
+		command: ["bun", "run", "servers/express-server.ts"],
+		port: EXPRESS_PORT,
+	},
+	{
+		name: "Fastify (Bun)",
+		command: ["bun", "run", "servers/fastify-server.ts"],
+		port: FASTIFY_PORT,
+	},
+	{
 		name: "Effect (Node)",
 		command: ["node", "--import", "tsx", "servers/node-effect-server.ts"],
 		port: NODE_EFFECT_PORT,
@@ -33,6 +47,16 @@ export const SERVER_CONFIGS: ServerConfig[] = [
 		name: "Hono (Node)",
 		command: ["node", "--import", "tsx", "servers/node-hono-server.ts"],
 		port: NODE_HONO_PORT,
+	},
+	{
+		name: "Express (Node)",
+		command: ["node", "--import", "tsx", "servers/node-express-server.ts"],
+		port: NODE_EXPRESS_PORT,
+	},
+	{
+		name: "Fastify (Node)",
+		command: ["node", "--import", "tsx", "servers/node-fastify-server.ts"],
+		port: NODE_FASTIFY_PORT,
 	},
 	{
 		name: "Hono + Effect Core (Node)",

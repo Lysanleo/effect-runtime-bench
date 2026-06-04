@@ -6,8 +6,12 @@
     "effect:start": "bun run servers/effect-server.ts",
     "elysia:start": "bun run servers/elysia-server.ts",
     "hono:start": "bun run servers/hono-server.ts",
+    "express:start": "bun run servers/express-server.ts",
+    "fastify:start": "bun run servers/fastify-server.ts",
     "node-effect:start": "node --import tsx servers/node-effect-server.ts",
     "node-hono:start": "node --import tsx servers/node-hono-server.ts",
+    "node-express:start": "node --import tsx servers/node-express-server.ts",
+    "node-fastify:start": "node --import tsx servers/node-fastify-server.ts",
     "node-hono-effect:start": "node --import tsx servers/hono-effect-server.ts",
     "benchmark": "bun run benchmark/runner.ts",
     "stress": "bun run benchmark/stress.ts"
@@ -16,9 +20,12 @@
     "@effect/platform-bun": "4.0.0-beta.76",
     "@effect/platform-node": "4.0.0-beta.76",
     "@hono/node-server": "2.0.4",
+    "@types/express": "^5.0.6",
     "autocannon": "^7.15.0",
     "effect": "4.0.0-beta.76",
     "elysia": "^1.1.0",
+    "express": "^5.2.1",
+    "fastify": "^5.8.5",
     "hono": "4.12.23"
   },
   "devDependencies": {
